@@ -48,7 +48,7 @@ st.markdown(
     .metric-card {
         background: linear-gradient(135deg, #1e1e2f 0%, #2a2a40 100%);
         border: 1px solid rgba(255,255,255,0.06);
-        border-radius: 16px;
+        border-radius: 24px;
         padding: 28px 24px;
         text-align: center;
         box-shadow: 0 8px 32px rgba(0,0,0,0.25);
@@ -78,7 +78,7 @@ st.markdown(
     .placeholder-box {
         background: linear-gradient(135deg, #1e1e2f 0%, #2a2a40 100%);
         border: 1px dashed rgba(255,255,255,0.12);
-        border-radius: 16px;
+        border-radius: 32px;
         padding: 60px 40px;
         text-align: center;
         margin-top: 40px;
@@ -301,6 +301,12 @@ with tab_perf:
         ),
         margin=dict(l=60, r=30, t=30, b=60),
         height=500,
+        hoverlabel=dict(
+            bgcolor="#1e1e2f",
+            bordercolor="#7c6aff",
+            font=dict(size=14, color="#e0e0ec", family="Inter, sans-serif"),
+            align="left",
+        ),
     )
 
     st.plotly_chart(fig, use_container_width=True)
@@ -405,8 +411,10 @@ with tab_perf:
         height=420,
         hoverlabel=dict(
             bgcolor="#1e1e2f",
-            bordercolor="#7c6aff",
-            font=dict(size=13, color="#e0e0ec", family="Inter"),
+            bordercolor="#c084fc",  # Match the accent color
+            font=dict(size=14, color="#e0e0ec", family="Inter, sans-serif"),
+            align="left",
+            namelength=-1,
         ),
     )
 
