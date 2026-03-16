@@ -219,6 +219,8 @@ with tab_perf:
     # --- ROC Curve (Plotly) ---
     st.markdown(
         '<p class="section-header">ROC Curve</p>'
+
+
         '<p class="section-sub">Receiver Operating Characteristic — true positive rate vs false positive rate</p>',
         unsafe_allow_html=True,
     )
