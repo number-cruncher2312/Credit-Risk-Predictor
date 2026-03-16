@@ -1,2 +1,3 @@
-cs-training.csv
-model/
+# Exclude large datasets if necessary, but for this demo we need them
+# cs-training.csv
+# model/
