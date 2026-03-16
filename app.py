@@ -451,3 +451,57 @@ with tab_predict:
         """,
         unsafe_allow_html=True,
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INJECT JS — Round the Plotly hover tooltip boxes
+#  CSS rx/ry does NOT work on SVG <path> elements. We must use JavaScript
+#  to intercept the hover paths and redraw them as rounded rectangles.
+# ═══════════════════════════════════════════════════════════════════════════════
+import streamlit.components.v1 as components
+
+components.html(
+    """
+    <script>
+    (function() {
+        const pd = window.parent.document;
+
+        // Redraw a sharp-cornered SVG path as a rounded rectangle
+        function roundify(path, r) {
+            try {
+                const bb = path.getBBox();
+                if (bb.width < 1 || bb.height < 1) return;
+                r = Math.min(r, bb.width / 2, bb.height / 2);
+                const x = bb.x, y = bb.y, w = bb.width, h = bb.height;
+                path.setAttribute('d',
+                    'M'+(x+r)+','+y+
+                    ' H'+(x+w-r)+
+                    ' a'+r+','+r+',0,0,1,'+r+','+r+
+                    ' V'+(y+h-r)+
+                    ' a'+r+','+r+',0,0,1,-'+r+','+r+
+                    ' H'+(x+r)+
+                    ' a'+r+','+r+',0,0,1,-'+r+',-'+r+
+                    ' V'+(y+r)+
+                    ' a'+r+','+r+',0,0,1,'+r+',-'+r+
+                    ' Z'
+                );
+            } catch(e) {}
+        }
+
+        const obs = new MutationObserver(function() {
+            pd.querySelectorAll('.hoverlayer .hovertext path').forEach(function(p) {
+                const d = p.getAttribute('d');
+                // Plotly's default rectangular tooltips don't use arc ('a') commands.
+                // Our curved tooltips do. If an 'a' is missing, it means Plotly just 
+                // redrew a sharp rectangle and we need to round it again.
+                if (d && !d.includes('a')) {
+                    roundify(p, 10);
+                }
+            });
+        });
+        obs.observe(pd.body, {childList: true, subtree: true, attributes: true});
+    })();
+    </script>
+    """,
+    height=0,
+)
