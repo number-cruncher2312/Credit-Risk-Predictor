@@ -1,12 +1,12 @@
-# 📊 Credit Risk Predictor
+#  Credit Risk Predictor
 
 An end-to-end credit risk modeling project using **XGBoost** to predict the probability of a borrower experiencing financial distress. 
 
-### 🚀 [View Live App](https://credit-risk-predictor-kzwx6mz7hky2xc3ucvqgjj.streamlit.app/)
+###  [View Live App](https://credit-risk-predictor-kzwx6mz7hky2xc3ucvqgjj.streamlit.app/)
 
 ---
 
-## 📈 Model Performance
+## Model Performance
 Based on the *Kaggle "Give Me Some Credit"* dataset, the model achieves strong predictive power:
 
 - **AUC-ROC**: `0.8653`
@@ -15,19 +15,19 @@ Based on the *Kaggle "Give Me Some Credit"* dataset, the model achieves strong p
 
 ---
 
-## 🛠️ Tech Stack
+##  Tech Stack
 - **Modeling**: XGBoost, Scikit-Learn
 - **Dashboard**: Streamlit, Plotly
 - **Data Engineering**: Pandas, NumPy
 - **Persistence**: Joblib
 
-## 📁 Repository Structure
+## Repository Structure
 - `train_model.py`: End-to-end training pipeline (Cleaning -> Imputation -> Oversampling -> Training -> Evaluation).
 - `app.py`: Interactive Streamlit dashboard.
 - `model/`: Serialized XGBoost model (`xgb_model.pkl`).
 - `requirements.txt`: Environment dependencies for deployment.
 
-## ⚙️ How to Run Locally
+##  How to Run Locally
 1. Clone the repository:
    ```bash
    git clone https://github.com/number-cruncher2312/Credit-Risk-Predictor.git
@@ -43,4 +43,4 @@ Based on the *Kaggle "Give Me Some Credit"* dataset, the model achieves strong p
    ```
 
 ---
-*Created with ❤️ by Antigravity.*
+*Created with Love by Antigravity.*
