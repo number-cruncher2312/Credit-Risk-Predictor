@@ -314,15 +314,67 @@ with tab_perf:
         unsafe_allow_html=True,
     )
 
+    # A lookup mapping raw column names -> clean labels + descriptions
+    FEATURE_META = {
+        "RevolvingUtilizationOfUnsecuredLines": {
+            "label": "Revolving Utilization",
+            "desc": "Credit card balance / credit limit ratio",
+        },
+        "age": {
+            "label": "Age",
+            "desc": "Borrower's age in years",
+        },
+        "NumberOfTime30-59DaysPastDueNotWorse": {
+            "label": "30-59 Days Past Due",
+            "desc": "Times 30-59 days late in last 2 years",
+        },
+        "DebtRatio": {
+            "label": "Debt Ratio",
+            "desc": "Monthly debt payments / gross income",
+        },
+        "MonthlyIncome": {
+            "label": "Monthly Income",
+            "desc": "Borrower's monthly gross income",
+        },
+        "NumberOfOpenCreditLinesAndLoans": {
+            "label": "Open Credit Lines",
+            "desc": "Number of open loans and credit lines",
+        },
+        "NumberOfTimes90DaysLate": {
+            "label": "90+ Days Late",
+            "desc": "Times 90+ days delinquent",
+        },
+        "NumberRealEstateLoansOrLines": {
+            "label": "Real Estate Loans",
+            "desc": "Number of mortgage and real estate loans",
+        },
+        "NumberOfTime60-89DaysPastDueNotWorse": {
+            "label": "60-89 Days Past Due",
+            "desc": "Times 60-89 days late in last 2 years",
+        },
+        "NumberOfDependents": {
+            "label": "Dependents",
+            "desc": "Number of dependents in the family",
+        },
+    }
+
     # Step 1: Extract importance scores stored inside the trained model
     importances = model.feature_importances_
     feature_names = X_test.columns.tolist()
 
-    # Step 2: Put into a DataFrame and sort ascending (top bar = most important)
-    feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+    # Step 2: Map raw names to clean labels and descriptions
+    clean_labels = [FEATURE_META.get(f, {}).get("label", f) for f in feature_names]
+    descriptions = [FEATURE_META.get(f, {}).get("desc", "") for f in feature_names]
+
+    # Step 3: Put into a DataFrame and sort ascending (top bar = most important)
+    feat_imp = pd.DataFrame({
+        "Feature": clean_labels,
+        "Importance": importances,
+        "Description": descriptions,
+    })
     feat_imp = feat_imp.sort_values("Importance", ascending=True)
 
-    # Step 3: Build horizontal bar chart with gradient coloring
+    # Step 4: Build horizontal bar chart with gradient coloring & hover descriptions
     fig_imp = go.Figure(
         go.Bar(
             x=feat_imp["Importance"],
@@ -332,7 +384,13 @@ with tab_perf:
                 color=feat_imp["Importance"],
                 colorscale=[[0, "#312e81"], [0.5, "#7c6aff"], [1, "#c084fc"]],
             ),
-            hovertemplate="%{y}<br>Importance: %{x:.4f}<extra></extra>",
+            customdata=feat_imp["Description"],
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "%{customdata}<br><br>"
+                "Importance: %{x:.4f}"
+                "<extra></extra>"
+            ),
         )
     )
 
@@ -345,6 +403,11 @@ with tab_perf:
         yaxis=dict(title="", gridcolor="rgba(255,255,255,0.05)"),
         margin=dict(l=20, r=30, t=20, b=50),
         height=420,
+        hoverlabel=dict(
+            bgcolor="#1e1e2f",
+            bordercolor="#7c6aff",
+            font=dict(size=13, color="#e0e0ec", family="Inter"),
+        ),
     )
 
     st.plotly_chart(fig_imp, use_container_width=True)
