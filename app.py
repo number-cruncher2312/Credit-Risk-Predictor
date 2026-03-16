@@ -305,6 +305,50 @@ with tab_perf:
 
     st.plotly_chart(fig, use_container_width=True)
 
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # --- Feature Importance Bar Chart ---
+    st.markdown(
+        '<p class="section-header">Feature Importance</p>'
+        '<p class="section-sub">Which variables XGBoost weighted most when making predictions (built-in gain-based importance)</p>',
+        unsafe_allow_html=True,
+    )
+
+    # Step 1: Extract importance scores stored inside the trained model
+    importances = model.feature_importances_
+    feature_names = X_test.columns.tolist()
+
+    # Step 2: Put into a DataFrame and sort ascending (top bar = most important)
+    feat_imp = pd.DataFrame({"Feature": feature_names, "Importance": importances})
+    feat_imp = feat_imp.sort_values("Importance", ascending=True)
+
+    # Step 3: Build horizontal bar chart with gradient coloring
+    fig_imp = go.Figure(
+        go.Bar(
+            x=feat_imp["Importance"],
+            y=feat_imp["Feature"],
+            orientation="h",
+            marker=dict(
+                color=feat_imp["Importance"],
+                colorscale=[[0, "#312e81"], [0.5, "#7c6aff"], [1, "#c084fc"]],
+            ),
+            hovertemplate="%{y}<br>Importance: %{x:.4f}<extra></extra>",
+        )
+    )
+
+    fig_imp.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(30,30,47,1)",
+        xaxis=dict(title="Importance Score",
+                   gridcolor="rgba(255,255,255,0.05)"),
+        yaxis=dict(title="", gridcolor="rgba(255,255,255,0.05)"),
+        margin=dict(l=20, r=30, t=20, b=50),
+        height=420,
+    )
+
+    st.plotly_chart(fig_imp, use_container_width=True)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  TAB 2 — SHAP EXPLORER  (placeholder)
