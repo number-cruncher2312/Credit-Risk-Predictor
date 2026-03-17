@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import plotly.graph_objects as go
+import shap
 import streamlit as st
 from scipy.stats import ks_2samp
 from sklearn.metrics import roc_auc_score, roc_curve
@@ -129,7 +130,7 @@ def load_data():
     # Median imputation
     for col in X.columns:
         if X[col].isnull().any():
-            X[col].fillna(X[col].median(), inplace=True)
+            X[col] = X[col].fillna(X[col].median())
 
     # Same split as training
     X_train, X_test, y_train, y_test = train_test_split(
@@ -311,7 +312,7 @@ with tab_perf:
         ),
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -420,22 +421,213 @@ with tab_perf:
         ),
     )
 
-    st.plotly_chart(fig_imp, use_container_width=True)
+    st.plotly_chart(fig_imp, width="stretch")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TAB 2 — SHAP EXPLORER  (placeholder)
+#  TAB 2 — SHAP EXPLORER
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_shap:
     st.markdown(
-        """
-        <div class="placeholder-box">
-            <h2>SHAP Explorer</h2>
-            <p>This tab will provide interactive SHAP explanations for the model's predictions.<br>
-            Coming soon.</p>
-        </div>
-        """,
+        '<p class="section-header">SHAP Explorer</p>'
+        '<p class="section-sub">Responsive global explanations with configurable sample size and feature depth</p>',
         unsafe_allow_html=True,
+    )
+
+    @st.cache_data
+    def load_shap_sample(n_rows=500):
+        """Load and preprocess a sample for SHAP analysis."""
+        base = os.path.dirname(__file__)
+        df = pd.read_csv(os.path.join(base, "cs-training.csv"))
+
+        if "Unnamed: 0" in df.columns:
+            df = df.drop(columns=["Unnamed: 0"])
+
+        target_col = "SeriousDlqin2yrs"
+        if target_col in df.columns:
+            X_sample = df.drop(columns=[target_col]).head(n_rows).copy()
+        else:
+            X_sample = df.head(n_rows).copy()
+
+        for col in X_sample.columns:
+            if X_sample[col].isnull().any():
+                X_sample[col] = X_sample[col].fillna(X_sample[col].median())
+
+        return X_sample
+
+    @st.cache_data
+    def compute_shap_bundle(n_rows=500):
+        """Return model-aligned sample and SHAP values for rendering."""
+        X_sample = load_shap_sample(n_rows)
+        model = load_model()
+
+        model_features = getattr(model, "feature_names_in_", None)
+        if model_features is not None:
+            X_sample = X_sample.loc[:, model_features]
+
+        explainer = shap.TreeExplainer(model)
+        shap_values_local = explainer.shap_values(X_sample)
+
+        # Binary classifiers may return a list per class; use positive class effects.
+        if isinstance(shap_values_local, list):
+            shap_values_local = shap_values_local[-1]
+
+        return X_sample, shap_values_local
+
+    c_rows, c_features, c_mode = st.columns(3)
+    with c_rows:
+        sample_rows = st.slider("Rows", min_value=200, max_value=2000, value=500, step=100)
+    with c_features:
+        max_display = st.slider("Top Features", min_value=5, max_value=20, value=12, step=1)
+    with c_mode:
+        plot_mode = st.selectbox("View", options=["Beeswarm", "Bar"], index=0)
+
+    with st.spinner("Computing SHAP values..."):
+        X_shap, shap_values = compute_shap_bundle(sample_rows)
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Rows Analyzed", f"{len(X_shap):,}")
+    m2.metric("Features Used", f"{X_shap.shape[1]:,}")
+    m3.metric("View", plot_mode)
+
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    top_idx = np.argsort(mean_abs_shap)[::-1][:max_display]
+    top_features = X_shap.columns[top_idx].tolist()
+    top_feature_labels = [FEATURE_META.get(f, {}).get("label", f) for f in top_features]
+
+    if plot_mode == "Bar":
+        bar_df = pd.DataFrame(
+            {
+                "Feature": top_feature_labels,
+                "Mean |SHAP|": mean_abs_shap[top_idx],
+            }
+        ).sort_values("Mean |SHAP|", ascending=True)
+
+        fig_shap = go.Figure(
+            go.Bar(
+                x=bar_df["Mean |SHAP|"],
+                y=bar_df["Feature"],
+                orientation="h",
+                marker=dict(
+                    color=bar_df["Mean |SHAP|"],
+                    colorscale=[[0, "#312e81"], [0.5, "#7c6aff"], [1, "#c084fc"]],
+                ),
+                hovertemplate=(
+                    "<b>%{y}</b><br>Mean |SHAP|: %{x:.5f}<extra></extra>"
+                ),
+            )
+        )
+
+        fig_shap.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(30,30,47,1)",
+            xaxis=dict(title="Mean Absolute SHAP Value", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(title="", gridcolor="rgba(255,255,255,0.05)"),
+            margin=dict(l=20, r=30, t=20, b=50),
+            height=max(360, min(560, 34 * max_display + 80)),
+            hoverlabel=dict(
+                bgcolor="#1e1e2f",
+                bordercolor="#c084fc",
+                font=dict(size=14, color="#e0e0ec", family="Inter, sans-serif"),
+                align="left",
+            ),
+        )
+    else:
+        rng = np.random.default_rng(42)
+
+        x_all = []
+        y_all = []
+        c_all = []
+        feature_all = []
+        raw_all = []
+
+        for row_idx, col_idx in enumerate(top_idx):
+            shap_col = shap_values[:, col_idx]
+            feat_col = pd.to_numeric(X_shap.iloc[:, col_idx], errors="coerce").to_numpy()
+            feat_col = np.nan_to_num(feat_col, nan=np.nanmedian(feat_col))
+
+            # Match SHAP-style coloring by scaling values within each feature.
+            if np.ptp(feat_col) == 0:
+                feat_col_norm = np.full_like(feat_col, 0.5, dtype=float)
+            else:
+                order = np.argsort(feat_col, kind="mergesort")
+                ranks = np.empty_like(order, dtype=float)
+                ranks[order] = np.linspace(0.0, 1.0, len(feat_col))
+                feat_col_norm = ranks
+
+            jitter = rng.uniform(-0.28, 0.28, size=len(shap_col))
+            y_pos = np.full(len(shap_col), row_idx) + jitter
+
+            x_all.append(shap_col)
+            y_all.append(y_pos)
+            c_all.append(feat_col_norm)
+            clean_label = FEATURE_META.get(X_shap.columns[col_idx], {}).get("label", X_shap.columns[col_idx])
+            feature_all.append(np.repeat(clean_label, len(shap_col)))
+            raw_all.append(feat_col)
+
+        x_plot = np.concatenate(x_all)
+        y_plot = np.concatenate(y_all)
+        color_plot = np.concatenate(c_all)
+        feature_plot = np.concatenate(feature_all)
+        raw_plot = np.concatenate(raw_all)
+
+        fig_shap = go.Figure(
+            go.Scattergl(
+                x=x_plot,
+                y=y_plot,
+                mode="markers",
+                customdata=np.column_stack([feature_plot, raw_plot]),
+                marker=dict(
+                    size=6,
+                    opacity=0.75,
+                    color=color_plot,
+                    colorscale=[[0, "#1296f3"], [0.5, "#7c6aff"], [1, "#ff0d57"]],
+                    colorbar=dict(title="Feature value", thickness=12),
+                ),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>SHAP: %{x:.5f}<br>Value: %{customdata[1]:.4f}<extra></extra>"
+                ),
+            )
+        )
+
+        fig_shap.update_layout(
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(30,30,47,1)",
+            xaxis=dict(title="SHAP value (impact on model output)", gridcolor="rgba(255,255,255,0.05)"),
+            yaxis=dict(
+                title="",
+                tickmode="array",
+                tickvals=list(range(len(top_features))),
+                ticktext=top_feature_labels,
+                autorange="reversed",
+                gridcolor="rgba(255,255,255,0.05)",
+            ),
+            margin=dict(l=20, r=30, t=20, b=60),
+            height=max(390, min(620, 34 * max_display + 110)),
+            hoverlabel=dict(
+                bgcolor="#1e1e2f",
+                bordercolor="#c084fc",
+                font=dict(size=14, color="#e0e0ec", family="Inter, sans-serif"),
+                align="left",
+            ),
+            shapes=[
+                dict(
+                    type="line",
+                    x0=0,
+                    x1=0,
+                    y0=-0.5,
+                    y1=len(top_features) - 0.5,
+                    line=dict(color="rgba(255,255,255,0.4)", width=1.3, dash="dot"),
+                )
+            ],
+        )
+
+    st.plotly_chart(fig_shap, width="stretch")
+
+    st.caption(
+        "Tip: Reduce rows on slower machines or mobile for faster and cleaner rendering."
     )
 
 
@@ -507,3 +699,7 @@ components.html(
     """,
     height=0,
 )
+
+
+
+# Thank you for using the Credit Risk Dashboard
