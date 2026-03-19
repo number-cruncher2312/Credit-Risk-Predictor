@@ -807,7 +807,7 @@ with tab_predict:
     col_left, col_right = st.columns([1, 1.2], gap="large")
 
     with col_left:
-        revolving_util = st.number_input(
+        revolving_utilization_value = st.number_input(
             "RevolvingUtilizationOfUnsecuredLines",
             min_value=0.0,
             max_value=1.0,
@@ -815,21 +815,21 @@ with tab_predict:
             step=0.01,
             format="%.2f",
         )
-        age = st.number_input(
+        age_value = st.number_input(
             "age",
             min_value=18,
             max_value=100,
             value=45,
             step=1,
         )
-        past_due_30_59 = st.number_input(
+        past_due_30_59_value = st.number_input(
             "NumberOfTime30-59DaysPastDueNotWorse",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
         )
-        debt_ratio = st.number_input(
+        debt_ratio_value = st.number_input(
             "DebtRatio",
             min_value=0.0,
             max_value=5.0,
@@ -837,42 +837,42 @@ with tab_predict:
             step=0.01,
             format="%.2f",
         )
-        monthly_income = st.number_input(
+        monthly_income_value = st.number_input(
             "MonthlyIncome",
             min_value=0,
             max_value=50000,
             value=5000,
             step=100,
         )
-        open_credit_lines = st.number_input(
+        open_credit_lines_value = st.number_input(
             "NumberOfOpenCreditLinesAndLoans",
             min_value=0,
             max_value=50,
             value=8,
             step=1,
         )
-        past_due_90 = st.number_input(
+        past_due_90_value = st.number_input(
             "NumberOfTimes90DaysLate",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
         )
-        real_estate_loans = st.number_input(
+        real_estate_loans_value = st.number_input(
             "NumberRealEstateLoansOrLines",
             min_value=0,
             max_value=20,
             value=1,
             step=1,
         )
-        past_due_60_89 = st.number_input(
+        past_due_60_89_value = st.number_input(
             "NumberOfTime60-89DaysPastDueNotWorse",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
         )
-        dependents = st.number_input(
+        dependents_value = st.number_input(
             "NumberOfDependents",
             min_value=0,
             max_value=10,
@@ -883,16 +883,16 @@ with tab_predict:
         predict_clicked = st.button("Predict", type="primary", use_container_width=True)
 
         input_payload = {
-            "RevolvingUtilizationOfUnsecuredLines": float(revolving_util),
-            "age": int(age),
-            "NumberOfTime30-59DaysPastDueNotWorse": int(past_due_30_59),
-            "DebtRatio": float(debt_ratio),
-            "MonthlyIncome": int(monthly_income),
-            "NumberOfOpenCreditLinesAndLoans": int(open_credit_lines),
-            "NumberOfTimes90DaysLate": int(past_due_90),
-            "NumberRealEstateLoansOrLines": int(real_estate_loans),
-            "NumberOfTime60-89DaysPastDueNotWorse": int(past_due_60_89),
-            "NumberOfDependents": int(dependents),
+            "RevolvingUtilizationOfUnsecuredLines": float(revolving_utilization_value),
+            "age": int(age_value),
+            "NumberOfTime30-59DaysPastDueNotWorse": int(past_due_30_59_value),
+            "DebtRatio": float(debt_ratio_value),
+            "MonthlyIncome": int(monthly_income_value),
+            "NumberOfOpenCreditLinesAndLoans": int(open_credit_lines_value),
+            "NumberOfTimes90DaysLate": int(past_due_90_value),
+            "NumberRealEstateLoansOrLines": int(real_estate_loans_value),
+            "NumberOfTime60-89DaysPastDueNotWorse": int(past_due_60_89_value),
+            "NumberOfDependents": int(dependents_value),
         }
 
         if predict_clicked:
@@ -922,8 +922,8 @@ with tab_predict:
         if "predictor_result" not in st.session_state:
             st.info("Click Predict to score the applicant and view explanation.")
         else:
-            result = st.session_state["predictor_result"]
-            pd_prob = float(result["pd_prob"])
+            predictor_result = st.session_state["predictor_result"]
+            pd_prob = float(predictor_result["pd_prob"])
 
             if pd_prob < 0.10:
                 risk_color = "#22c55e"
@@ -957,9 +957,9 @@ with tab_predict:
                 unsafe_allow_html=True,
             )
 
-            input_row_series = pd.Series(result["input_row"])
-            shap_row = np.asarray(result["shap_row"], dtype=float)
-            base_value = float(result["base_value"])
+            input_row_series = pd.Series(predictor_result["input_row"])
+            shap_row = np.asarray(predictor_result["shap_row"], dtype=float)
+            base_value = float(predictor_result["base_value"])
             clean_feature_names = [FEATURE_META.get(f, {}).get("label", f) for f in input_row_series.index]
 
             row_explanation = shap.Explanation(
@@ -978,34 +978,34 @@ with tab_predict:
             st.pyplot(fig_pred_wf, use_container_width=True)
             plt.close(fig_pred_wf)
 
-            driver_idx = np.argsort(np.abs(shap_row))[::-1][:3]
+            top_driver_indices = np.argsort(np.abs(shap_row))[::-1][:3]
             driver_lines = []
-            for idx in driver_idx:
-                raw_feature = input_row_series.index[idx]
+            for driver_col_idx in top_driver_indices:
+                raw_feature = input_row_series.index[driver_col_idx]
                 feature_label = FEATURE_META.get(raw_feature, {}).get("label", raw_feature)
-                feature_value = float(input_row_series.iloc[idx])
-                direction = "increases risk" if shap_row[idx] >= 0 else "decreases risk"
+                feature_value = float(input_row_series.iloc[driver_col_idx])
+                direction = "increases risk" if shap_row[driver_col_idx] >= 0 else "decreases risk"
 
                 if feature_value.is_integer():
-                    value_txt = f"{int(feature_value)}"
+                    feature_value_text = f"{int(feature_value)}"
                 elif abs(feature_value) >= 1000:
-                    value_txt = f"{feature_value:.0f}"
+                    feature_value_text = f"{feature_value:.0f}"
                 else:
-                    value_txt = f"{feature_value:.3f}".rstrip("0").rstrip(".")
+                    feature_value_text = f"{feature_value:.3f}".rstrip("0").rstrip(".")
 
                 driver_lines.append(
-                    f"{feature_label}: value={value_txt}, {direction}"
+                    f"{feature_label}: value={feature_value_text}, {direction}"
                 )
 
             shap_drivers = "; ".join(driver_lines)
             pd_score = round(pd_prob * 100, 2)
 
             narrative_cache_key = f"{pd_score}|{shap_drivers}"
-            cached_key = st.session_state.get("predictor_narrative_key")
-            cached_narrative = st.session_state.get("predictor_narrative")
+            cached_narrative_key = st.session_state.get("predictor_narrative_key")
+            cached_narrative_text = st.session_state.get("predictor_narrative")
 
-            if cached_key == narrative_cache_key and cached_narrative:
-                st.info(cached_narrative)
+            if cached_narrative_key == narrative_cache_key and cached_narrative_text:
+                st.info(cached_narrative_text)
             else:
                 nim_api_key = st.secrets.get("NIM_API_KEY", "")
                 if not nim_api_key or nim_api_key == "your_key_here":
@@ -1027,7 +1027,6 @@ with tab_predict:
                             },
                         ]
 
-                        last_error = None
                         try:
                             client = OpenAI(
                                 base_url="https://integrate.api.nvidia.com/v1",
@@ -1043,8 +1042,7 @@ with tab_predict:
                             st.session_state["predictor_narrative_key"] = narrative_cache_key
                             st.session_state["predictor_narrative"] = narrative_text
                             st.info(narrative_text)
-                        except Exception as primary_err:
-                            last_error = primary_err
+                        except Exception:
                             try:
                                 client = OpenAI(
                                     base_url="https://integrate.api.nvidia.com/v1",
