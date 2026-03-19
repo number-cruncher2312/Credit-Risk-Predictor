@@ -15,6 +15,7 @@ import os
 import numpy as np
 import pandas as pd
 import joblib
+import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 import shap
 import streamlit as st
@@ -144,6 +145,12 @@ def load_model():
     """Load the persisted XGBoost model."""
     base = os.path.dirname(__file__)
     return joblib.load(os.path.join(base, "model", "xgb_model.pkl"))
+
+
+@st.cache_resource
+def get_shap_explainer():
+    """Build one shared TreeExplainer instance for all tabs."""
+    return shap.TreeExplainer(load_model())
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -465,7 +472,7 @@ with tab_shap:
         if model_features is not None:
             X_sample = X_sample.loc[:, model_features]
 
-        explainer = shap.TreeExplainer(model)
+        explainer = get_shap_explainer()
         shap_values_local = explainer.shap_values(X_sample)
         base_value_local = explainer.expected_value
 
@@ -788,15 +795,189 @@ with tab_shap:
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_predict:
     st.markdown(
-        """
-        <div class="placeholder-box">
-            <h2>Applicant Predictor</h2>
-            <p>This tab will let you enter applicant details and get a real-time default probability.<br>
-            Coming soon.</p>
-        </div>
-        """,
+        '<p class="section-header">Applicant Predictor</p>'
+        '<p class="section-sub">Enter applicant attributes and score a single case with SHAP explanation</p>',
         unsafe_allow_html=True,
     )
+
+    model = load_model()
+    model_features = list(getattr(model, "feature_names_in_", []))
+
+    col_left, col_right = st.columns([1, 1.2], gap="large")
+
+    with col_left:
+        revolving_util = st.number_input(
+            "RevolvingUtilizationOfUnsecuredLines",
+            min_value=0.0,
+            max_value=1.0,
+            value=0.30,
+            step=0.01,
+            format="%.2f",
+        )
+        age = st.number_input(
+            "age",
+            min_value=18,
+            max_value=100,
+            value=45,
+            step=1,
+        )
+        past_due_30_59 = st.number_input(
+            "NumberOfTime30-59DaysPastDueNotWorse",
+            min_value=0,
+            max_value=20,
+            value=0,
+            step=1,
+        )
+        debt_ratio = st.number_input(
+            "DebtRatio",
+            min_value=0.0,
+            max_value=5.0,
+            value=0.80,
+            step=0.01,
+            format="%.2f",
+        )
+        monthly_income = st.number_input(
+            "MonthlyIncome",
+            min_value=0,
+            max_value=50000,
+            value=5000,
+            step=100,
+        )
+        open_credit_lines = st.number_input(
+            "NumberOfOpenCreditLinesAndLoans",
+            min_value=0,
+            max_value=50,
+            value=8,
+            step=1,
+        )
+        past_due_90 = st.number_input(
+            "NumberOfTimes90DaysLate",
+            min_value=0,
+            max_value=20,
+            value=0,
+            step=1,
+        )
+        real_estate_loans = st.number_input(
+            "NumberRealEstateLoansOrLines",
+            min_value=0,
+            max_value=20,
+            value=1,
+            step=1,
+        )
+        past_due_60_89 = st.number_input(
+            "NumberOfTime60-89DaysPastDueNotWorse",
+            min_value=0,
+            max_value=20,
+            value=0,
+            step=1,
+        )
+        dependents = st.number_input(
+            "NumberOfDependents",
+            min_value=0,
+            max_value=10,
+            value=0,
+            step=1,
+        )
+
+        predict_clicked = st.button("Predict", type="primary", use_container_width=True)
+
+        input_payload = {
+            "RevolvingUtilizationOfUnsecuredLines": float(revolving_util),
+            "age": int(age),
+            "NumberOfTime30-59DaysPastDueNotWorse": int(past_due_30_59),
+            "DebtRatio": float(debt_ratio),
+            "MonthlyIncome": int(monthly_income),
+            "NumberOfOpenCreditLinesAndLoans": int(open_credit_lines),
+            "NumberOfTimes90DaysLate": int(past_due_90),
+            "NumberRealEstateLoansOrLines": int(real_estate_loans),
+            "NumberOfTime60-89DaysPastDueNotWorse": int(past_due_60_89),
+            "NumberOfDependents": int(dependents),
+        }
+
+        if predict_clicked:
+            input_df = pd.DataFrame([input_payload])
+            if model_features:
+                input_df = input_df.loc[:, model_features]
+
+            pd_prob = float(model.predict_proba(input_df)[0, 1])
+
+            explainer = get_shap_explainer()
+            row_shap_values = explainer.shap_values(input_df)
+            row_base_value = explainer.expected_value
+
+            if isinstance(row_shap_values, list):
+                row_shap_values = row_shap_values[-1]
+            if isinstance(row_base_value, (list, np.ndarray)):
+                row_base_value = row_base_value[-1]
+
+            st.session_state["predictor_result"] = {
+                "pd_prob": pd_prob,
+                "input_row": input_df.iloc[0].to_dict(),
+                "shap_row": np.asarray(row_shap_values[0], dtype=float).tolist(),
+                "base_value": float(row_base_value),
+            }
+
+    with col_right:
+        if "predictor_result" not in st.session_state:
+            st.info("Click Predict to score the applicant and view explanation.")
+        else:
+            result = st.session_state["predictor_result"]
+            pd_prob = float(result["pd_prob"])
+
+            if pd_prob < 0.10:
+                risk_color = "#22c55e"
+                risk_label = "Low Risk"
+            elif pd_prob <= 0.30:
+                risk_color = "#f59e0b"
+                risk_label = "Moderate Risk"
+            else:
+                risk_color = "#ef4444"
+                risk_label = "High Risk"
+
+            st.markdown(
+                f"""
+                <div style="
+                    background: linear-gradient(135deg, #17192a 0%, #22263a 100%);
+                    border: 1px solid {risk_color};
+                    border-radius: 20px;
+                    padding: 20px 24px;
+                    margin-bottom: 16px;
+                    box-shadow: 0 10px 24px rgba(0,0,0,0.25);
+                ">
+                    <div style="font-size:0.82rem;color:#9d9db5;letter-spacing:1.1px;text-transform:uppercase;">
+                        Probability Of Default (PD)
+                    </div>
+                    <div style="font-size:2.2rem;font-weight:700;color:{risk_color};margin-top:6px;line-height:1;">
+                        {pd_prob * 100:.2f}%
+                    </div>
+                    <div style="margin-top:8px;color:#c9ccda;font-size:0.95rem;">{risk_label}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            input_row_series = pd.Series(result["input_row"])
+            shap_row = np.asarray(result["shap_row"], dtype=float)
+            base_value = float(result["base_value"])
+            clean_feature_names = [FEATURE_META.get(f, {}).get("label", f) for f in input_row_series.index]
+
+            row_explanation = shap.Explanation(
+                values=shap_row,
+                base_values=base_value,
+                data=input_row_series.to_numpy(),
+                feature_names=clean_feature_names,
+            )
+
+            plt.style.use("dark_background")
+            plt.figure(figsize=(12, 6))
+            shap.plots.waterfall(row_explanation, max_display=10, show=False)
+            fig_pred_wf = plt.gcf()
+            fig_pred_wf.patch.set_facecolor("none")
+            fig_pred_wf.tight_layout()
+            st.pyplot(fig_pred_wf, use_container_width=True)
+            plt.close(fig_pred_wf)
+
+            st.markdown("LLM narrative coming soon")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
