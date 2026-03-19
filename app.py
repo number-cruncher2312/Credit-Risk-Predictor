@@ -457,7 +457,7 @@ with tab_shap:
 
     @st.cache_data
     def compute_shap_bundle(n_rows=500):
-        """Return model-aligned sample and SHAP values for rendering."""
+        """Return model-aligned sample, SHAP values, and SHAP base value."""
         X_sample = load_shap_sample(n_rows)
         model = load_model()
 
@@ -467,12 +467,15 @@ with tab_shap:
 
         explainer = shap.TreeExplainer(model)
         shap_values_local = explainer.shap_values(X_sample)
+        base_value_local = explainer.expected_value
 
         # Binary classifiers may return a list per class; use positive class effects.
         if isinstance(shap_values_local, list):
             shap_values_local = shap_values_local[-1]
+        if isinstance(base_value_local, (list, np.ndarray)):
+            base_value_local = base_value_local[-1]
 
-        return X_sample, shap_values_local
+        return X_sample, shap_values_local, float(base_value_local)
 
     c_rows, c_features, c_mode = st.columns(3)
     with c_rows:
@@ -483,7 +486,7 @@ with tab_shap:
         plot_mode = st.selectbox("View", options=["Beeswarm", "Bar"], index=0)
 
     with st.spinner("Computing SHAP values..."):
-        X_shap, shap_values = compute_shap_bundle(sample_rows)
+        X_shap, shap_values, base_value = compute_shap_bundle(sample_rows)
 
     m1, m2, m3 = st.columns(3)
     m1.metric("Rows Analyzed", f"{len(X_shap):,}")
@@ -625,6 +628,155 @@ with tab_shap:
         )
 
     st.plotly_chart(fig_shap, width="stretch")
+
+    st.markdown(
+        '<p class="section-header">Applicant Waterfall</p>'
+        '<p class="section-sub">Single-row SHAP breakdown for one applicant from the sampled rows</p>',
+        unsafe_allow_html=True,
+    )
+
+    waterfall_row = st.number_input(
+        "Row Index (0-499)",
+        min_value=0,
+        max_value=499,
+        value=0,
+        step=1,
+    )
+
+    selected_row = int(min(waterfall_row, len(X_shap) - 1))
+    if selected_row != waterfall_row:
+        st.info(f"Selected row adjusted to {selected_row} because current sample size is {len(X_shap)}.")
+
+    clean_feature_names = [FEATURE_META.get(f, {}).get("label", f) for f in X_shap.columns]
+    row_values = X_shap.iloc[selected_row].to_numpy()
+    row_shap = shap_values[selected_row]
+    pred_value = float(base_value + np.sum(row_shap))
+
+    top_idx = np.argsort(np.abs(row_shap))[::-1][:max_display]
+    remaining_contrib = float(np.sum(row_shap) - np.sum(row_shap[top_idx]))
+
+    # Keep SHAP-like order: strongest absolute effects first.
+    ordered_idx = top_idx
+
+    y_labels = []
+    x_values = []
+    measures = []
+    text_labels = []
+    customdata = []
+
+    for idx in ordered_idx:
+        feat_val = row_values[idx]
+        feat_name = clean_feature_names[idx]
+        contrib = float(row_shap[idx])
+
+        if float(feat_val).is_integer():
+            feat_txt = f"{int(feat_val)}"
+        elif abs(feat_val) >= 1000:
+            feat_txt = f"{feat_val:.0f}"
+        else:
+            feat_txt = f"{feat_val:.3g}"
+
+        y_labels.append(f"{feat_txt} = {feat_name}")
+        x_values.append(contrib)
+        measures.append("relative")
+        text_labels.append(f"{contrib:+.2f}")
+        customdata.append([feat_name, feat_val, contrib])
+
+    if abs(remaining_contrib) > 1e-6:
+        y_labels.append(f"{len(X_shap.columns) - len(top_idx)} other features")
+        x_values.append(remaining_contrib)
+        measures.append("relative")
+        text_labels.append(f"{remaining_contrib:+.2f}")
+        customdata.append(["other features", np.nan, remaining_contrib])
+
+    fig_wf = go.Figure(
+        go.Waterfall(
+            orientation="h",
+            y=y_labels,
+            x=x_values,
+            measure=measures,
+            base=float(base_value),
+            text=text_labels,
+            textposition="outside",
+            textfont={"size": 15},
+            customdata=np.array(customdata, dtype=object),
+            connector={"line": {"color": "rgba(210, 210, 230, 0.35)", "width": 1.4, "dash": "dot"}},
+            increasing={"marker": {"color": "#ff005e"}},
+            decreasing={"marker": {"color": "#119DFF"}},
+            hovertemplate=(
+                "<b>%{customdata[0]}</b><br>"
+                "Contribution: %{customdata[2]:+.5f}<br>"
+                "Feature value: %{customdata[1]:.4f}<extra></extra>"
+            ),
+        )
+    )
+
+    fig_wf.update_layout(
+        template="plotly_dark",
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,1)",
+        xaxis=dict(
+            title="Model output",
+            gridcolor="rgba(255,255,255,0.15)",
+            zeroline=True,
+            zerolinecolor="rgba(255,255,255,0.35)",
+            zerolinewidth=1.2,
+        ),
+        yaxis=dict(
+            title="",
+            gridcolor="rgba(255,255,255,0.14)",
+            automargin=True,
+            autorange="reversed",
+        ),
+        margin=dict(l=300, r=35, t=18, b=65),
+        height=max(440, min(760, 54 * len(y_labels) + 90)),
+        hoverlabel=dict(
+            bgcolor="#1e1e2f",
+            bordercolor="#c084fc",
+            font=dict(size=14, color="#e0e0ec", family="Inter, sans-serif"),
+            align="left",
+        ),
+        shapes=[
+            dict(
+                type="line",
+                x0=float(base_value),
+                x1=float(base_value),
+                y0=-0.5,
+                y1=max(0, len(y_labels) - 0.5),
+                line=dict(color="rgba(255,255,255,0.30)", width=1.2, dash="dot"),
+            ),
+            dict(
+                type="line",
+                x0=pred_value,
+                x1=pred_value,
+                y0=-0.5,
+                y1=max(0, len(y_labels) - 0.5),
+                line=dict(color="rgba(255,255,255,0.30)", width=1.2, dash="dot"),
+            ),
+        ],
+        annotations=[
+            dict(
+                x=float(base_value),
+                y=-0.14,
+                xref="x",
+                yref="paper",
+                text=f"E[f(X)] = {float(base_value):.2f}",
+                showarrow=False,
+                font=dict(size=14, color="rgba(220,220,235,0.95)"),
+            ),
+            dict(
+                x=pred_value,
+                y=-0.14,
+                xref="x",
+                yref="paper",
+                text=f"f(x) = {pred_value:.2f}",
+                showarrow=False,
+                font=dict(size=14, color="rgba(220,220,235,0.95)"),
+            ),
+        ],
+    )
+
+    st.plotly_chart(fig_wf, width="stretch")
 
     st.caption(
         "Tip: Reduce rows on slower machines or mobile for faster and cleaner rendering."
