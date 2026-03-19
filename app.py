@@ -17,6 +17,7 @@ import pandas as pd
 import joblib
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go
+from openai import OpenAI
 import shap
 import streamlit as st
 from scipy.stats import ks_2samp
@@ -977,7 +978,90 @@ with tab_predict:
             st.pyplot(fig_pred_wf, use_container_width=True)
             plt.close(fig_pred_wf)
 
-            st.markdown("LLM narrative coming soon")
+            driver_idx = np.argsort(np.abs(shap_row))[::-1][:3]
+            driver_lines = []
+            for idx in driver_idx:
+                raw_feature = input_row_series.index[idx]
+                feature_label = FEATURE_META.get(raw_feature, {}).get("label", raw_feature)
+                feature_value = float(input_row_series.iloc[idx])
+                direction = "increases risk" if shap_row[idx] >= 0 else "decreases risk"
+
+                if feature_value.is_integer():
+                    value_txt = f"{int(feature_value)}"
+                elif abs(feature_value) >= 1000:
+                    value_txt = f"{feature_value:.0f}"
+                else:
+                    value_txt = f"{feature_value:.3f}".rstrip("0").rstrip(".")
+
+                driver_lines.append(
+                    f"{feature_label}: value={value_txt}, {direction}"
+                )
+
+            shap_drivers = "; ".join(driver_lines)
+            pd_score = round(pd_prob * 100, 2)
+
+            narrative_cache_key = f"{pd_score}|{shap_drivers}"
+            cached_key = st.session_state.get("predictor_narrative_key")
+            cached_narrative = st.session_state.get("predictor_narrative")
+
+            if cached_key == narrative_cache_key and cached_narrative:
+                st.info(cached_narrative)
+            else:
+                nim_api_key = st.secrets.get("NIM_API_KEY", "")
+                if not nim_api_key or nim_api_key == "your_key_here":
+                    st.warning("Narrative unavailable: set a valid NIM_API_KEY in .streamlit/secrets.toml")
+                else:
+                    with st.spinner("Generating analyst narrative..."):
+                        prompt_messages = [
+                            {
+                                "role": "system",
+                                "content": "You are a credit risk analyst. Write concise, professional assessments. Never invent data not provided to you.",
+                            },
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"A loan applicant has a {pd_score}% probability of default. "
+                                    f"The top risk drivers are: {shap_drivers}. "
+                                    "Write a 3-sentence credit analyst assessment explaining the key risk factors and overall credit profile."
+                                ),
+                            },
+                        ]
+
+                        last_error = None
+                        try:
+                            client = OpenAI(
+                                base_url="https://integrate.api.nvidia.com/v1",
+                                api_key=nim_api_key,
+                            )
+
+                            response = client.chat.completions.create(
+                                model="z-ai/glm5",
+                                messages=prompt_messages,
+                                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                            )
+                            narrative_text = response.choices[0].message.content
+                            st.session_state["predictor_narrative_key"] = narrative_cache_key
+                            st.session_state["predictor_narrative"] = narrative_text
+                            st.info(narrative_text)
+                        except Exception as primary_err:
+                            last_error = primary_err
+                            try:
+                                client = OpenAI(
+                                    base_url="https://integrate.api.nvidia.com/v1",
+                                    api_key=nim_api_key,
+                                )
+                                response = client.chat.completions.create(
+                                    model="moonshotai/kimi-k2-instruct",
+                                    messages=prompt_messages,
+                                    extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                                )
+                                narrative_text = response.choices[0].message.content
+                                st.session_state["predictor_narrative_key"] = narrative_cache_key
+                                st.session_state["predictor_narrative"] = narrative_text
+                                st.info(narrative_text)
+                            except Exception as fallback_err:
+                                st.warning("Narrative unavailable")
+                                st.caption(f"NIM error: {type(fallback_err).__name__}: {fallback_err}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

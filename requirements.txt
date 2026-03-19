@@ -6,3 +6,4 @@ numpy==2.3.5
 joblib==1.5.2
 plotly==6.6.0
 scipy==1.16.2
+openai==1.109.1

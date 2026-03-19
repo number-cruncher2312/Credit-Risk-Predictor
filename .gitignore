@@ -1,3 +1,9 @@
 # Exclude large datasets if necessary, but for this demo we need them
 # cs-training.csv
 # model/
+
+# Local app secrets
+.streamlit/secrets.toml
+
+# Python cache artifacts
+__pycache__/
