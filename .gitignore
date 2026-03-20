@@ -1,6 +1,6 @@
-# Exclude large datasets if necessary, but for this demo we need them
-# cs-training.csv
-# model/
+# Local data artifacts
+cs-training.csv
+data/*.csv
 
 # Local app secrets
 .streamlit/secrets.toml

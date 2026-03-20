@@ -25,7 +25,17 @@ Based on the *Kaggle "Give Me Some Credit"* dataset, the model achieves strong p
 - `train_model.py`: End-to-end training pipeline (Cleaning -> Imputation -> Oversampling -> Training -> Evaluation).
 - `app.py`: Interactive Streamlit dashboard.
 - `model/`: Serialized XGBoost model (`xgb_model.pkl`).
+- `data/`: Dataset location and sourcing notes.
 - `requirements.txt`: Environment dependencies for deployment.
+
+## Dataset
+This repository does **not** version large raw datasets.
+
+1. Download the *Give Me Some Credit* training file (`cs-training.csv`) from Kaggle:
+   https://www.kaggle.com/c/GiveMeSomeCredit/data
+2. Place it in either:
+   - `data/cs-training.csv` (preferred)
+   - `cs-training.csv` (backward-compatible fallback)
 
 ##  How to Run Locally
 1. Clone the repository:
@@ -37,7 +47,8 @@ Based on the *Kaggle "Give Me Some Credit"* dataset, the model achieves strong p
    ```bash
    pip install -r requirements.txt
    ```
-3. Run the dashboard:
+3. Download and place the dataset (see **Dataset** section).
+4. Run the dashboard:
    ```bash
    streamlit run app.py
    ```

@@ -5,8 +5,8 @@ Streamlit dashboard for the Credit-Risk XGBoost model.
 
 Tabs
   1. Model Performance  - ROC curve, AUC-ROC, Gini, KS statistic
-  2. SHAP Explorer       - placeholder
-  3. Applicant Predictor - placeholder
+    2. SHAP Explorer       - global + local SHAP explanations
+    3. Applicant Predictor - single-applicant scoring + narrative
 
 Run:  streamlit run app.py
 """
@@ -23,6 +23,64 @@ import streamlit as st
 from scipy.stats import ks_2samp
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
+
+DATASET_CANDIDATES = (
+    os.path.join("data", "cs-training.csv"),
+    "cs-training.csv",
+)
+
+FEATURE_META = {
+    "RevolvingUtilizationOfUnsecuredLines": {
+        "label": "Revolving Utilization",
+        "desc": "Credit card balance / credit limit ratio",
+    },
+    "age": {
+        "label": "Age",
+        "desc": "Borrower's age in years",
+    },
+    "NumberOfTime30-59DaysPastDueNotWorse": {
+        "label": "30-59 Days Past Due",
+        "desc": "Times 30-59 days late in last 2 years",
+    },
+    "DebtRatio": {
+        "label": "Debt Ratio",
+        "desc": "Monthly debt payments / gross income",
+    },
+    "MonthlyIncome": {
+        "label": "Monthly Income",
+        "desc": "Borrower's monthly gross income",
+    },
+    "NumberOfOpenCreditLinesAndLoans": {
+        "label": "Open Credit Lines",
+        "desc": "Number of open loans and credit lines",
+    },
+    "NumberOfTimes90DaysLate": {
+        "label": "90+ Days Late",
+        "desc": "Times 90+ days delinquent",
+    },
+    "NumberRealEstateLoansOrLines": {
+        "label": "Real Estate Loans",
+        "desc": "Number of mortgage and real estate loans",
+    },
+    "NumberOfTime60-89DaysPastDueNotWorse": {
+        "label": "60-89 Days Past Due",
+        "desc": "Times 60-89 days late in last 2 years",
+    },
+    "NumberOfDependents": {
+        "label": "Dependents",
+        "desc": "Number of dependents in the family",
+    },
+}
+
+
+def resolve_dataset_path():
+    """Return the first dataset path that exists in the repository."""
+    base = os.path.dirname(__file__)
+    for rel_path in DATASET_CANDIDATES:
+        candidate = os.path.join(base, rel_path)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(base, DATASET_CANDIDATES[0])
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -119,8 +177,7 @@ st.markdown(
 @st.cache_data
 def load_data():
     """Load and prepare the dataset (same pipeline as train_model.py)."""
-    base = os.path.dirname(__file__)
-    df = pd.read_csv(os.path.join(base, "cs-training.csv"))
+    df = pd.read_csv(resolve_dataset_path())
 
     if "Unnamed: 0" in df.columns:
         df.drop(columns=["Unnamed: 0"], inplace=True)
@@ -157,6 +214,12 @@ def get_shap_explainer():
         # Some cloud runtime combinations (e.g., newer Python/XGBoost builds)
         # can fail in SHAP TreeExplainer internals.
         return None
+
+
+@st.cache_resource
+def is_shap_ready():
+    """Expose SHAP availability as a shared flag for all tabs."""
+    return get_shap_explainer() is not None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -336,50 +399,6 @@ with tab_perf:
         unsafe_allow_html=True,
     )
 
-    # A lookup mapping raw column names -> clean labels + descriptions
-    FEATURE_META = {
-        "RevolvingUtilizationOfUnsecuredLines": {
-            "label": "Revolving Utilization",
-            "desc": "Credit card balance / credit limit ratio",
-        },
-        "age": {
-            "label": "Age",
-            "desc": "Borrower's age in years",
-        },
-        "NumberOfTime30-59DaysPastDueNotWorse": {
-            "label": "30-59 Days Past Due",
-            "desc": "Times 30-59 days late in last 2 years",
-        },
-        "DebtRatio": {
-            "label": "Debt Ratio",
-            "desc": "Monthly debt payments / gross income",
-        },
-        "MonthlyIncome": {
-            "label": "Monthly Income",
-            "desc": "Borrower's monthly gross income",
-        },
-        "NumberOfOpenCreditLinesAndLoans": {
-            "label": "Open Credit Lines",
-            "desc": "Number of open loans and credit lines",
-        },
-        "NumberOfTimes90DaysLate": {
-            "label": "90+ Days Late",
-            "desc": "Times 90+ days delinquent",
-        },
-        "NumberRealEstateLoansOrLines": {
-            "label": "Real Estate Loans",
-            "desc": "Number of mortgage and real estate loans",
-        },
-        "NumberOfTime60-89DaysPastDueNotWorse": {
-            "label": "60-89 Days Past Due",
-            "desc": "Times 60-89 days late in last 2 years",
-        },
-        "NumberOfDependents": {
-            "label": "Dependents",
-            "desc": "Number of dependents in the family",
-        },
-    }
-
     # Step 1: Extract importance scores stored inside the trained model
     importances = model.feature_importances_
     feature_names = X_test.columns.tolist()
@@ -450,8 +469,7 @@ with tab_shap:
     @st.cache_data
     def load_shap_sample(n_rows=500):
         """Load and preprocess a sample for SHAP analysis."""
-        base = os.path.dirname(__file__)
-        df = pd.read_csv(os.path.join(base, "cs-training.csv"))
+        df = pd.read_csv(resolve_dataset_path())
 
         if "Unnamed: 0" in df.columns:
             df = df.drop(columns=["Unnamed: 0"])
@@ -479,6 +497,8 @@ with tab_shap:
             X_sample = X_sample.loc[:, model_features]
 
         explainer = get_shap_explainer()
+        if explainer is None:
+            raise RuntimeError("SHAP explainer is unavailable in this environment")
         shap_values_local = explainer.shap_values(X_sample)
         base_value_local = explainer.expected_value
 
@@ -498,17 +518,15 @@ with tab_shap:
     with c_mode:
         plot_mode = st.selectbox("View", options=["Beeswarm", "Bar"], index=0)
 
-    with st.spinner("Computing SHAP values..."):
-        try:
+    shap_ready = is_shap_ready()
+    if shap_ready:
+        with st.spinner("Computing SHAP values..."):
             X_shap, shap_values, base_value = compute_shap_bundle(sample_rows)
-            shap_ready = True
-        except Exception as exc:
-            shap_ready = False
-            st.error(
-                "SHAP is temporarily unavailable in this deployment environment. "
-                "The rest of the dashboard is still fully functional."
-            )
-            st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
+    else:
+        st.error(
+            "SHAP is temporarily unavailable in this deployment environment. "
+            "The rest of the dashboard is still fully functional."
+        )
 
     if shap_ready:
         m1, m2, m3 = st.columns(3)
@@ -927,14 +945,14 @@ with tab_predict:
 
             pd_prob = float(model.predict_proba(input_df)[0, 1])
 
-            explainer = get_shap_explainer()
-            if explainer is None:
+            if not is_shap_ready():
                 st.session_state["predictor_result"] = {
                     "pd_prob": pd_prob,
                     "input_row": input_df.iloc[0].to_dict(),
                     "shap_available": False,
                 }
             else:
+                explainer = get_shap_explainer()
                 row_shap_values = explainer.shap_values(input_df)
                 row_base_value = explainer.expected_value
 

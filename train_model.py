@@ -24,10 +24,25 @@ from xgboost import XGBClassifier
 
 warnings.filterwarnings("ignore")
 
+DATASET_CANDIDATES = (
+    os.path.join("data", "cs-training.csv"),
+    "cs-training.csv",
+)
+
+
+def resolve_dataset_path():
+    """Return the first dataset path that exists in the repository."""
+    base = os.path.dirname(__file__)
+    for rel_path in DATASET_CANDIDATES:
+        candidate = os.path.join(base, rel_path)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(base, DATASET_CANDIDATES[0])
+
 # ──────────────────────────────────────────────
 # 1.  LOAD DATA
 # ──────────────────────────────────────────────
-DATA_PATH = os.path.join(os.path.dirname(__file__), "cs-training.csv")
+DATA_PATH = resolve_dataset_path()
 
 print("Loading data ...")
 df = pd.read_csv(DATA_PATH)
