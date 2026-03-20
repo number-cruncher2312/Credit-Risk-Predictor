@@ -823,76 +823,86 @@ with tab_predict:
 
     with col_left:
         revolving_utilization_value = st.number_input(
-            "RevolvingUtilizationOfUnsecuredLines",
+            "Revolving Utilization",
             min_value=0.0,
             max_value=1.0,
             value=0.30,
             step=0.01,
             format="%.2f",
+            help="Credit card balance / credit limit ratio",
         )
         age_value = st.number_input(
-            "age",
+            "Age",
             min_value=18,
             max_value=100,
             value=45,
             step=1,
+            help="Borrower age in years",
         )
         past_due_30_59_value = st.number_input(
-            "NumberOfTime30-59DaysPastDueNotWorse",
+            "30-59 Days Past Due",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
+            help="Times 30-59 days late in last 2 years",
         )
         debt_ratio_value = st.number_input(
-            "DebtRatio",
+            "Debt Ratio",
             min_value=0.0,
             max_value=5.0,
             value=0.80,
             step=0.01,
             format="%.2f",
+            help="Monthly debt payments / gross income",
         )
         monthly_income_value = st.number_input(
-            "MonthlyIncome",
+            "Monthly Income",
             min_value=0,
             max_value=50000,
             value=5000,
             step=100,
+            help="Borrower monthly gross income",
         )
         open_credit_lines_value = st.number_input(
-            "NumberOfOpenCreditLinesAndLoans",
+            "Open Credit Lines",
             min_value=0,
             max_value=50,
             value=8,
             step=1,
+            help="Number of open loans and credit lines",
         )
         past_due_90_value = st.number_input(
-            "NumberOfTimes90DaysLate",
+            "90+ Days Late",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
+            help="Times 90+ days delinquent",
         )
         real_estate_loans_value = st.number_input(
-            "NumberRealEstateLoansOrLines",
+            "Real Estate Loans",
             min_value=0,
             max_value=20,
             value=1,
             step=1,
+            help="Number of mortgage and real estate loans",
         )
         past_due_60_89_value = st.number_input(
-            "NumberOfTime60-89DaysPastDueNotWorse",
+            "60-89 Days Past Due",
             min_value=0,
             max_value=20,
             value=0,
             step=1,
+            help="Times 60-89 days late in last 2 years",
         )
         dependents_value = st.number_input(
-            "NumberOfDependents",
+            "Dependents",
             min_value=0,
             max_value=10,
             value=0,
             step=1,
+            help="Number of dependents in the family",
         )
 
         predict_clicked = st.button("Predict", type="primary", use_container_width=True)
