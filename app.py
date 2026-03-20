@@ -1056,29 +1056,14 @@ with tab_predict:
                                 },
                             ]
 
-                        try:
-                            client = OpenAI(
-                                base_url="https://integrate.api.nvidia.com/v1",
-                                api_key=nim_api_key,
-                            )
-
-                            response = client.chat.completions.create(
-                                model="z-ai/glm5",
-                                messages=prompt_messages,
-                                extra_body={"chat_template_kwargs": {"enable_thinking": False}},
-                            )
-                            narrative_text = response.choices[0].message.content
-                            st.session_state["predictor_narrative_key"] = narrative_cache_key
-                            st.session_state["predictor_narrative"] = narrative_text
-                            st.info(narrative_text)
-                        except Exception:
                             try:
                                 client = OpenAI(
                                     base_url="https://integrate.api.nvidia.com/v1",
                                     api_key=nim_api_key,
                                 )
+
                                 response = client.chat.completions.create(
-                                    model="moonshotai/kimi-k2-instruct",
+                                    model="z-ai/glm5",
                                     messages=prompt_messages,
                                     extra_body={"chat_template_kwargs": {"enable_thinking": False}},
                                 )
@@ -1086,9 +1071,24 @@ with tab_predict:
                                 st.session_state["predictor_narrative_key"] = narrative_cache_key
                                 st.session_state["predictor_narrative"] = narrative_text
                                 st.info(narrative_text)
-                            except Exception as fallback_err:
-                                st.warning("Narrative unavailable")
-                                st.caption(f"NIM error: {type(fallback_err).__name__}: {fallback_err}")
+                            except Exception:
+                                try:
+                                    client = OpenAI(
+                                        base_url="https://integrate.api.nvidia.com/v1",
+                                        api_key=nim_api_key,
+                                    )
+                                    response = client.chat.completions.create(
+                                        model="moonshotai/kimi-k2-instruct",
+                                        messages=prompt_messages,
+                                        extra_body={"chat_template_kwargs": {"enable_thinking": False}},
+                                    )
+                                    narrative_text = response.choices[0].message.content
+                                    st.session_state["predictor_narrative_key"] = narrative_cache_key
+                                    st.session_state["predictor_narrative"] = narrative_text
+                                    st.info(narrative_text)
+                                except Exception as fallback_err:
+                                    st.warning("Narrative unavailable")
+                                    st.caption(f"NIM error: {type(fallback_err).__name__}: {fallback_err}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
