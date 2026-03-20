@@ -122,7 +122,7 @@ def render_missing_dataset_help(error):
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Credit Risk Dashboard",
-    page_icon="📊",
+    page_icon=os.path.join(os.path.dirname(__file__), "assets", "favicon.svg"),
     layout="wide",
 )
 
