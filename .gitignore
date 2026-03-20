@@ -1,5 +1,4 @@
 # Local data artifacts
-cs-training.csv
 data/*.csv
 
 # Local app secrets

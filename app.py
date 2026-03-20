@@ -25,8 +25,8 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 
 DATASET_CANDIDATES = (
-    os.path.join("data", "cs-training.csv"),
     "cs-training.csv",
+    os.path.join("data", "cs-training.csv"),
 )
 
 FEATURE_META = {
@@ -74,13 +74,50 @@ FEATURE_META = {
 
 
 def resolve_dataset_path():
-    """Return the first dataset path that exists in the repository."""
+    """Return the first dataset path that exists in the repository, else None."""
     base = os.path.dirname(__file__)
     for rel_path in DATASET_CANDIDATES:
         candidate = os.path.join(base, rel_path)
         if os.path.exists(candidate):
             return candidate
-    return os.path.join(base, DATASET_CANDIDATES[0])
+    return None
+
+
+def dataset_source_signature(uploaded_file):
+    """Build a lightweight cache key that changes with source updates."""
+    if uploaded_file is not None:
+        return f"upload:{uploaded_file.name}:{uploaded_file.size}"
+
+    dataset_path = resolve_dataset_path()
+    if dataset_path is None:
+        return "missing"
+
+    return f"path:{dataset_path}:{os.path.getmtime(dataset_path)}"
+
+
+def read_dataset_dataframe(uploaded_file=None):
+    """Load dataset from repository paths first, then uploaded CSV fallback."""
+    dataset_path = resolve_dataset_path()
+    if dataset_path is not None:
+        return pd.read_csv(dataset_path)
+
+    if uploaded_file is not None:
+        uploaded_file.seek(0)
+        return pd.read_csv(uploaded_file)
+
+    raise FileNotFoundError(
+        "Dataset file not found. Expected one of: cs-training.csv or data/cs-training.csv"
+    )
+
+
+def render_missing_dataset_help(error):
+    """Show a user-facing recovery message when dataset is unavailable."""
+    st.error("Dataset not found. The app cannot run without cs-training.csv.")
+    st.caption(str(error))
+    st.info(
+        "For Streamlit Cloud, either commit the CSV as data/cs-training.csv, "
+        "or upload it with the sidebar uploader."
+    )
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -170,14 +207,21 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+uploaded_dataset = st.sidebar.file_uploader(
+    "Upload cs-training.csv",
+    type=["csv"],
+    help="Use this on Streamlit Cloud if the dataset is not committed in the repository.",
+)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  DATA & MODEL LOADING  (cached so it only runs once)
 # ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data
-def load_data():
+def load_data(dataset_signature, uploaded_file=None):
     """Load and prepare the dataset (same pipeline as train_model.py)."""
-    df = pd.read_csv(resolve_dataset_path())
+    del dataset_signature
+    df = read_dataset_dataframe(uploaded_file)
 
     if "Unnamed: 0" in df.columns:
         df.drop(columns=["Unnamed: 0"], inplace=True)
@@ -237,7 +281,14 @@ tab_perf, tab_shap, tab_predict = st.tabs(
 # ═══════════════════════════════════════════════════════════════════════════════
 with tab_perf:
     # Load data & model
-    X_train, X_test, y_train, y_test = load_data()
+    dataset_signature = dataset_source_signature(uploaded_dataset)
+
+    try:
+        X_train, X_test, y_train, y_test = load_data(dataset_signature, uploaded_dataset)
+    except FileNotFoundError as err:
+        render_missing_dataset_help(err)
+        st.stop()
+
     model = load_model()
 
     # Predictions
@@ -467,9 +518,10 @@ with tab_shap:
     )
 
     @st.cache_data
-    def load_shap_sample(n_rows=500):
+    def load_shap_sample(n_rows=500, dataset_signature=""):
         """Load and preprocess a sample for SHAP analysis."""
-        df = pd.read_csv(resolve_dataset_path())
+        del dataset_signature
+        df = read_dataset_dataframe(uploaded_dataset)
 
         if "Unnamed: 0" in df.columns:
             df = df.drop(columns=["Unnamed: 0"])
@@ -487,9 +539,9 @@ with tab_shap:
         return X_sample
 
     @st.cache_data
-    def compute_shap_bundle(n_rows=500):
+    def compute_shap_bundle(n_rows=500, dataset_signature=""):
         """Return model-aligned sample, SHAP values, and SHAP base value."""
-        X_sample = load_shap_sample(n_rows)
+        X_sample = load_shap_sample(n_rows, dataset_signature)
         model = load_model()
 
         model_features = getattr(model, "feature_names_in_", None)
@@ -520,8 +572,15 @@ with tab_shap:
 
     shap_ready = is_shap_ready()
     if shap_ready:
-        with st.spinner("Computing SHAP values..."):
-            X_shap, shap_values, base_value = compute_shap_bundle(sample_rows)
+        try:
+            with st.spinner("Computing SHAP values..."):
+                X_shap, shap_values, base_value = compute_shap_bundle(
+                    sample_rows,
+                    dataset_source_signature(uploaded_dataset),
+                )
+        except FileNotFoundError as err:
+            render_missing_dataset_help(err)
+            st.stop()
     else:
         st.error(
             "SHAP is temporarily unavailable in this deployment environment. "
