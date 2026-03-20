@@ -7,3 +7,5 @@ joblib==1.5.2
 plotly==6.6.0
 scipy==1.16.2
 openai==1.109.1
+matplotlib==3.10.7
+shap==0.48.0
