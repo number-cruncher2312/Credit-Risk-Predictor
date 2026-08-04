@@ -7,9 +7,12 @@ Tabs
   1. Model Performance  - ROC curve, AUC-ROC, Gini, KS statistic
     2. SHAP Explorer       - global + local SHAP explanations
     3. Applicant Predictor - single-applicant scoring + narrative
+    4. Regulatory Capital  - backend-driven Basel portfolio summary
 
 Run:  streamlit run app.py
 """
+
+from config import MONITORING_CONFIG
 
 import os
 import numpy as np
@@ -20,9 +23,23 @@ import plotly.graph_objects as go
 from openai import OpenAI
 import shap
 import streamlit as st
+
 from scipy.stats import ks_2samp
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
+from streamlit.errors import StreamlitSecretNotFoundError
+
+from drift import (
+    compute_drift_metrics,
+    determine_monitoring_status,
+    load_psi_history,
+    record_psi_history,
+    resolve_psi_history_path,
+    select_monitoring_features,
+)
+from drift_simulation import SIMULATION_SCENARIOS, simulate_drift_dataset
+from reg_capital import BASEL_PD_CEILING, BASEL_PD_FLOOR, compute_portfolio
+from drift_monitoring_tab import render_drift_monitoring_tab
 
 DATASET_CANDIDATES = (
     "cs-training.csv",
@@ -118,6 +135,272 @@ def render_missing_dataset_help(error):
         "For Streamlit Cloud, either commit the CSV as data/cs-training.csv, "
         "or upload it with the sidebar uploader."
     )
+
+
+def normalize_capital_portfolio_columns(frame):
+    """Normalize uploaded portfolio columns to the backend Basel schema."""
+
+    normalized = frame.copy()
+    normalized.columns = (
+        normalized.columns.astype(str)
+        .str.strip()
+        .str.lower()
+        .str.replace(" ", "_", regex=False)
+        .str.replace("-", "_", regex=False)
+    )
+
+    return normalized.rename(
+        columns={
+            "loanid": "loan_id",
+            "probability_of_default": "pd",
+            "loss_given_default": "lgd",
+            "exposure_at_default": "ead",
+            "maturity_years": "maturity_years",
+            "maturity_yrs": "maturity_years",
+            "maturity": "maturity",
+        }
+    )
+
+
+def load_capital_portfolio(uploaded_file=None):
+    """Load the capital portfolio or fall back to a tiny demo table."""
+
+    demo_portfolio = pd.DataFrame(
+        {
+            "loan_id": ["L-001", "L-002", "L-003"],
+            "pd": [0.012, 0.028, 0.045],
+            "lgd": [0.42, 0.47, 0.51],
+            "ead": [250_000, 420_000, 610_000],
+            "maturity": [2.0, 3.0, 4.5],
+        }
+    )
+
+    if uploaded_file is None:
+        return demo_portfolio
+
+    uploaded_file.seek(0)
+    return normalize_capital_portfolio_columns(pd.read_csv(uploaded_file))
+
+
+def format_capital_metric(value, kind="money"):
+    """Format capital metrics for display in the regulatory capital tab."""
+
+    if kind == "pct":
+        return f"{value * 100:.2f}%"
+
+    abs_value = abs(value)
+    if abs_value >= 1_000_000_000:
+        compact_value = value / 1_000_000_000
+        suffix = "B"
+    elif abs_value >= 1_000_000:
+        compact_value = value / 1_000_000
+        suffix = "M"
+    elif abs_value >= 1_000:
+        compact_value = value / 1_000
+        suffix = "K"
+    else:
+        return f"{value:,.2f}"
+
+    if abs(compact_value) >= 100:
+        return f"{compact_value:.0f}{suffix}"
+    if abs(compact_value) >= 10:
+        return f"{compact_value:.1f}{suffix}"
+    return f"{compact_value:.2f}{suffix}"
+
+
+def compact_number(value):
+    """Format large monetary values as K, M, or B for compact display."""
+
+    return format_capital_metric(float(value))
+
+
+def style_risk_columns(frame):
+    """Highlight the K and RWA columns with a subtle gradient."""
+
+    return (
+        frame.style.format(
+            {
+                "PD": "{:.4f}",
+                "LGD": "{:.4f}",
+                "EAD": compact_number,
+                "K": "{:.4f}",
+                "RWA": compact_number,
+            }
+        )
+        .background_gradient(subset=["K"], cmap="YlOrBr")
+        .background_gradient(subset=["RWA"], cmap="YlOrRd")
+        .format_index(escape="html")
+    )
+
+
+def apply_pd_stress_to_portfolio(frame, stress_multiplier):
+    """Return a stressed copy of the portfolio with Basel-safe PD values.
+
+    The dataframe is copied so the original portfolio remains unchanged.
+    PD stress is applied before Basel calculations because the backend should
+    remain the single source of truth for all Basel formulas and aggregations.
+    """
+
+    stressed_portfolio = frame.copy()
+    stressed_portfolio["pd"] = (
+        stressed_portfolio["pd"] * stress_multiplier
+    ).clip(lower=BASEL_PD_FLOOR, upper=BASEL_PD_CEILING)
+    return stressed_portfolio
+
+
+def build_capital_rwa_chart(loan_table):
+    """Build a loan-level RWA chart for the regulatory capital dashboard."""
+
+    chart_frame = loan_table.loc[:, ["loan_id", "basel_rwa"]].sort_values(
+        "basel_rwa", ascending=False
+    )
+
+    fig = go.Figure(
+        data=[
+            go.Bar(
+                x=chart_frame["loan_id"],
+                y=chart_frame["basel_rwa"],
+                marker_color="#f97316",
+                hovertemplate="Loan %{x}<br>RWA: %{y:,.0f}<extra></extra>",
+            )
+        ]
+    )
+    fig.update_layout(
+        title="RWA by Loan",
+        xaxis_title="Loan ID",
+        yaxis_title="Risk-Weighted Assets",
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=360,
+    )
+    return fig
+
+
+def build_capital_pd_rwa_chart(loan_table):
+    """Build a PD versus RWA chart to visualize stress sensitivity."""
+
+    max_ead = float(loan_table["ead"].max()) if float(loan_table["ead"].max()) != 0 else 1.0
+
+    fig = go.Figure(
+        data=[
+            go.Scatter(
+                x=loan_table["pd"],
+                y=loan_table["basel_rwa"],
+                mode="markers",
+                marker=dict(
+                    size=(loan_table["ead"] / max_ead).clip(lower=0.25) * 24,
+                    color=loan_table["basel_capital"],
+                    colorscale="OrRd",
+                    showscale=True,
+                    colorbar=dict(title="Capital"),
+                    line=dict(width=0.5, color="rgba(0,0,0,0.3)"),
+                ),
+                text=loan_table["loan_id"],
+                hovertemplate=(
+                    "Loan %{text}<br>PD: %{x:.4f}<br>RWA: %{y:,.0f}<extra></extra>"
+                ),
+            )
+        ]
+    )
+    fig.update_layout(
+        title="PD Stress Sensitivity",
+        xaxis_title="Probability of Default",
+        yaxis_title="Risk-Weighted Assets",
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=50, b=20),
+        height=360,
+    )
+    return fig
+
+
+def summarize_capital_portfolio(frame):
+    """Collect the backend portfolio totals used in the comparison card."""
+
+    return {
+        "total_rwa": float(frame.attrs.get("total_portfolio_rwa", frame["basel_rwa"].sum())),
+        "total_regulatory_capital": float(
+            frame.attrs.get("total_regulatory_capital", frame["basel_capital"].sum())
+        ),
+        "total_expected_loss": float((frame["pd"] * frame["lgd"] * frame["ead"]).sum()),
+    }
+
+
+def format_delta_percent(base_value, stressed_value):
+    """Format a percentage change, guarding against division by zero."""
+
+    if base_value == 0:
+        return "n/a"
+
+    delta = (stressed_value / base_value - 1.0) * 100.0
+    return f"{delta:+.1f}%"
+
+
+def format_directional_delta(base_value, stressed_value):
+    """Format a directional change label for the risk comparison card."""
+
+    if base_value == 0:
+        return "n/a"
+
+    delta = (stressed_value / base_value - 1.0) * 100.0
+    arrow = "↑" if delta >= 0 else "↓"
+    return f"{arrow} {abs(delta):.1f}%"
+
+
+def render_capital_comparison_card(base_summary, stressed_summary, stress_multiplier):
+    """Show the original and stressed portfolios without recomputing Basel logic in the UI."""
+
+    stressed_label = f"Stressed Portfolio ({stress_multiplier * 100:.0f}%)"
+    capital_delta = format_delta_percent(
+        base_summary["total_regulatory_capital"], stressed_summary["total_regulatory_capital"]
+    )
+    rwa_delta = format_directional_delta(base_summary["total_rwa"], stressed_summary["total_rwa"])
+    el_delta = format_directional_delta(
+        base_summary["total_expected_loss"], stressed_summary["total_expected_loss"]
+    )
+
+    st.markdown(
+        f"""
+        <div class="comparison-card">
+            <div class="comparison-card__grid">
+                <div class="comparison-card__panel">
+                    <div class="comparison-card__eyebrow">Base Portfolio</div>
+                    <div class="comparison-card__label">Regulatory Capital</div>
+                    <div class="comparison-card__value">₹{format_capital_metric(base_summary['total_regulatory_capital'])}</div>
+                </div>
+                <div class="comparison-card__arrow">↓</div>
+                <div class="comparison-card__panel">
+                    <div class="comparison-card__eyebrow">{stressed_label}</div>
+                    <div class="comparison-card__label">Regulatory Capital</div>
+                    <div class="comparison-card__value">₹{format_capital_metric(stressed_summary['total_regulatory_capital'])}</div>
+                </div>
+            </div>
+            <div class="comparison-card__delta-row">
+                <div class="comparison-card__delta">
+                    <div class="comparison-card__delta-label">Δ Regulatory Capital</div>
+                    <div class="comparison-card__delta-value positive">{capital_delta}</div>
+                </div>
+                <div class="comparison-card__delta">
+                    <div class="comparison-card__delta-label">RWA</div>
+                    <div class="comparison-card__delta-value positive">{rwa_delta}</div>
+                </div>
+                <div class="comparison-card__delta">
+                    <div class="comparison-card__delta-label">Expected Loss</div>
+                    <div class="comparison-card__delta-value positive">{el_delta}</div>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def get_secret_value(name, default=""):
+    """Return a Streamlit secret if available, otherwise fall back safely."""
+
+    try:
+        return st.secrets.get(name, default)
+    except StreamlitSecretNotFoundError:
+        return default
 
 # ─── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
@@ -217,6 +500,97 @@ st.markdown(
         background: linear-gradient(135deg, #7c6aff, #c084fc);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+    }
+
+    /* ---------- Comparison card ---------- */
+    .comparison-card {
+        background: linear-gradient(135deg, rgba(30, 30, 47, 0.96) 0%, rgba(42, 42, 64, 0.96) 100%);
+        border: 1px solid rgba(255,255,255,0.08);
+        border-radius: 28px;
+        padding: 24px;
+        box-shadow: 0 12px 40px rgba(0,0,0,0.28);
+        margin: 8px 0 24px;
+    }
+    .comparison-card__grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        gap: 16px;
+        align-items: center;
+    }
+    .comparison-card__panel {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 22px;
+        padding: 20px;
+        min-height: 132px;
+    }
+    .comparison-card__eyebrow {
+        color: #9d9db5;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        font-size: 0.76rem;
+        font-weight: 600;
+        margin-bottom: 10px;
+    }
+    .comparison-card__label {
+        color: #e0e0ec;
+        font-size: 0.92rem;
+        font-weight: 500;
+        margin-bottom: 8px;
+    }
+    .comparison-card__value {
+        font-size: 2rem;
+        font-weight: 700;
+        color: #f8fafc;
+        line-height: 1.1;
+    }
+    .comparison-card__arrow {
+        color: #f97316;
+        font-size: 2rem;
+        font-weight: 700;
+        text-align: center;
+        padding: 0 6px;
+    }
+    .comparison-card__delta-row {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 16px;
+    }
+    .comparison-card__delta {
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.05);
+        border-radius: 18px;
+        padding: 14px 16px;
+    }
+    .comparison-card__delta-label {
+        color: #9d9db5;
+        font-size: 0.74rem;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        margin-bottom: 6px;
+    }
+    .comparison-card__delta-value {
+        color: #f8fafc;
+        font-size: 1.2rem;
+        font-weight: 700;
+    }
+    .comparison-card__delta-value.positive {
+        color: #fb923c;
+    }
+    .comparison-card__delta-value.negative {
+        color: #34d399;
+    }
+    @media (max-width: 900px) {
+        .comparison-card__grid,
+        .comparison-card__delta-row {
+            grid-template-columns: 1fr;
+        }
+        .comparison-card__arrow {
+            transform: rotate(90deg);
+            padding: 4px 0;
+        }
     }
 
     /* ---------- Tab placeholder ---------- */
@@ -330,8 +704,14 @@ def is_shap_ready():
 st.markdown("## Credit Risk Model Dashboard")
 st.caption("XGBoost classifier trained on the *Give Me Some Credit* dataset")
 
-tab_perf, tab_shap, tab_predict = st.tabs(
-    ["Model Performance", "SHAP Explorer", "Applicant Predictor"]
+tab_perf, tab_shap, tab_predict, tab_capital, tab_drift = st.tabs(
+    [
+        "Model Performance",
+        "SHAP Explorer",
+        "Applicant Predictor",
+        "Regulatory Capital",
+        "Drift Monitoring",
+    ]
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -407,7 +787,7 @@ with tab_perf:
         '<p class="section-header">ROC Curve</p>'
 
 
-        '<p class="section-sub">Receiver Operating Characteristic — true positive rate vs false positive rate</p>',
+        '<p class="section-sub">Receiver Operating Characteristic: true positive rate vs false positive rate</p>',
         unsafe_allow_html=True,
     )
 
@@ -1181,7 +1561,7 @@ with tab_predict:
                 if cached_narrative_key == narrative_cache_key and cached_narrative_text:
                     st.info(cached_narrative_text)
                 else:
-                    nim_api_key = st.secrets.get("NIM_API_KEY", "")
+                    nim_api_key = get_secret_value("NIM_API_KEY", "")
                     if not nim_api_key or nim_api_key == "your_key_here":
                         st.warning("Narrative unavailable: set a valid NIM_API_KEY in .streamlit/secrets.toml")
                     else:
@@ -1221,6 +1601,249 @@ with tab_predict:
                             except Exception as fallback_err:
                                 st.warning("Narrative unavailable")
                                 st.caption(f"NIM error: {type(fallback_err).__name__}: {fallback_err}")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB 4 — REGULATORY CAPITAL
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_capital:
+    st.markdown(
+        '<p class="section-header">Regulatory Capital</p>'
+        '<p class="section-sub">Backend-driven Basel portfolio summary and loan table</p>',
+        unsafe_allow_html=True,
+    )
+
+    st.info(
+        "This tab uses the backend Basel helpers in reg_capital.py. The Streamlit UI only prepares input and renders the results."
+    )
+
+    capital_upload = st.sidebar.file_uploader(
+        "Upload regulatory capital CSV",
+        type=["csv"],
+        key="capital_portfolio_upload",
+        help="Optional. If omitted, a small demo portfolio is used.",
+    )
+
+    pd_stress_multiplier = st.slider(
+        "PD Stress Multiplier",
+        min_value=1.0,
+        max_value=2.0,
+        value=1.0,
+        step=0.05,
+        format="%.2f×",
+        help="Multiply every loan's predicted PD by this factor before Basel calculations.",
+    )
+
+    portfolio_status_label = (
+        "Original Portfolio"
+        if pd_stress_multiplier == 1.0
+        else f"Stressed Portfolio (PD Stress = {pd_stress_multiplier * 100:.0f}%)"
+    )
+
+    st.info(portfolio_status_label)
+    st.caption(
+        "What happens to required regulatory capital if every borrower's probability of default increases because of deteriorating macroeconomic conditions?"
+    )
+
+    capital_portfolio = load_capital_portfolio(capital_upload)
+
+    st.caption(
+        "Required columns: pd, lgd, ead, and either maturity or maturity_years. loan_id is optional."
+    )
+
+    try:
+        # Copy the portfolio before applying stress so the original upload stays unchanged.
+        stressed_capital_portfolio = apply_pd_stress_to_portfolio(
+            capital_portfolio,
+            pd_stress_multiplier,
+        )
+        # The backend remains responsible for every Basel computation; Streamlit only prepares inputs.
+        base_capital_result = compute_portfolio(capital_portfolio)
+        capital_result = compute_portfolio(stressed_capital_portfolio)
+    except Exception as exc:
+        st.error("The regulatory capital portfolio could not be processed.")
+        st.exception(exc)
+        st.stop()
+
+    base_summary = summarize_capital_portfolio(base_capital_result)
+    stressed_summary = summarize_capital_portfolio(capital_result)
+    render_capital_comparison_card(base_summary, stressed_summary, pd_stress_multiplier)
+
+    total_rwa = stressed_summary["total_rwa"]
+    total_regulatory_capital = stressed_summary["total_regulatory_capital"]
+    average_pd = float(capital_result["pd"].mean())
+    average_lgd = float(capital_result["lgd"].mean())
+    total_ead = float(capital_result["ead"].sum())
+    total_expected_loss = stressed_summary["total_expected_loss"]
+
+    st.markdown(
+        '<p class="section-header">Portfolio Summary</p>'
+        '<p class="section-sub">Calculated entirely by the backend portfolio helper from the original or stressed copy</p>',
+        unsafe_allow_html=True,
+    )
+
+    capital_cols = st.columns(6)
+    with capital_cols[0]:
+        st.metric("Total RWA", format_capital_metric(total_rwa))
+    with capital_cols[1]:
+        st.metric("Total Regulatory Capital", format_capital_metric(total_regulatory_capital))
+    with capital_cols[2]:
+        st.metric("Average PD", format_capital_metric(average_pd, "pct"))
+    with capital_cols[3]:
+        st.metric("Average LGD", format_capital_metric(average_lgd, "pct"))
+    with capital_cols[4]:
+        st.metric("Total EAD", format_capital_metric(total_ead))
+    with capital_cols[5]:
+        st.metric("Total Expected Loss", format_capital_metric(total_expected_loss))
+
+    st.markdown(
+        '<p class="section-header">Loan Table</p>'
+        '<p class="section-sub">Row-level Basel outputs returned by the backend</p>',
+        unsafe_allow_html=True,
+    )
+
+    loan_table = capital_result.copy()
+    if "loan_id" not in loan_table.columns or loan_table["loan_id"].isna().all():
+        loan_table.insert(0, "loan_id", [f"Loan-{idx + 1}" for idx in range(len(loan_table))])
+    else:
+        loan_table["loan_id"] = loan_table["loan_id"].fillna(
+            pd.Series([f"Loan-{idx + 1}" for idx in range(len(loan_table))], index=loan_table.index)
+        )
+
+    display_capital_table = loan_table.loc[:, ["loan_id", "pd", "lgd", "ead", "basel_k", "basel_rwa"]].rename(
+        columns={
+            "loan_id": "Loan ID",
+            "pd": "PD",
+            "lgd": "LGD",
+            "ead": "EAD",
+            "basel_k": "K",
+            "basel_rwa": "RWA",
+        }
+    )
+
+    st.dataframe(
+        style_risk_columns(display_capital_table),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.markdown(
+        '<p class="section-header">Charts</p>'
+        '<p class="section-sub">The plots below update from the stressed backend results without changing the source portfolio</p>',
+        unsafe_allow_html=True,
+    )
+
+    chart_cols = st.columns(2)
+    with chart_cols[0]:
+        st.plotly_chart(
+            build_capital_rwa_chart(loan_table),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+    with chart_cols[1]:
+        st.plotly_chart(
+            build_capital_pd_rwa_chart(loan_table),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
+
+    st.markdown(
+        '<p class="section-header">Top 10 RWA Contributors</p>'
+        '<p class="section-sub">Ranked by the largest portfolio capital impact</p>',
+        unsafe_allow_html=True,
+    )
+
+    top_rwa_table = (
+        loan_table.loc[:, ["loan_id", "pd", "lgd", "ead", "basel_k", "basel_rwa"]]
+        .sort_values("basel_rwa", ascending=False)
+        .head(10)
+        .rename(
+            columns={
+                "loan_id": "Loan ID",
+                "pd": "PD",
+                "lgd": "LGD",
+                "ead": "EAD",
+                "basel_k": "K",
+                "basel_rwa": "RWA",
+            }
+        )
+        .reset_index(drop=True)
+    )
+
+    st.dataframe(
+        style_risk_columns(top_rwa_table),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TAB 5 — DRIFT MONITORING
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_drift:
+    simulation_mode = st.toggle("Enable Drift Simulation Mode", value=False)
+    simulation_scenario = st.selectbox(
+        "Simulation Scenario",
+        options=list(SIMULATION_SCENARIOS.keys()),
+        index=0,
+        format_func=lambda scenario_key: SIMULATION_SCENARIOS[scenario_key]["label"],
+        disabled=not simulation_mode,
+        help="Choose a demo scenario that modifies the current dataset before PSI and CSI are computed.",
+    )
+    st.caption(SIMULATION_SCENARIOS[simulation_scenario]["description"])
+
+    try:
+        monitored_features = select_monitoring_features(
+            X_train,
+            model,
+            get_shap_explainer(),
+            MONITORING_CONFIG,
+        )
+        drift_current_data = (
+            simulate_drift_dataset(X_test, simulation_scenario)
+            if simulation_mode
+            else X_test
+        )
+        drift_results = compute_drift_metrics(
+            current_data=drift_current_data,
+            reference_data=X_train,
+            monitored_features=monitored_features,
+            config=MONITORING_CONFIG,
+            model=model,
+        )
+        monitoring_status, recommended_action = determine_monitoring_status(
+            drift_results,
+            MONITORING_CONFIG,
+        )
+        psi_history_path = resolve_psi_history_path(
+            os.path.dirname(__file__),
+            MONITORING_CONFIG,
+        )
+        if simulation_mode:
+            psi_history = load_psi_history(psi_history_path)
+            psi_history = pd.concat(
+                [
+                    psi_history,
+                    pd.DataFrame(
+                        [{"Date": "Simulation", "PSI": drift_results.psi.value}]
+                    ),
+                ],
+                ignore_index=True,
+            )
+        else:
+            psi_history = record_psi_history(drift_results.psi.value, psi_history_path)
+    except Exception as exc:
+        st.error("Drift monitoring could not be computed.")
+        st.exception(exc)
+    else:
+        render_drift_monitoring_tab(
+            drift_results=drift_results,
+            monitoring_status=monitoring_status,
+            recommended_action=recommended_action,
+            psi_history=psi_history,
+            simulation_mode=simulation_mode,
+            simulation_scenario_label=SIMULATION_SCENARIOS[simulation_scenario]["label"],
+        )
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1275,7 +1898,6 @@ components.html(
     """,
     height=0,
 )
-
 
 
 # Thank you for using the Credit Risk Dashboard
