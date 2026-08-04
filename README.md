@@ -4,6 +4,7 @@ An end-to-end credit risk analytics platform built with Python and Streamlit tha
 
 The project demonstrates how modern credit risk models can be developed, validated, monitored, and interpreted throughout their lifecycle.
 
+###  [View Live App](https://credit-risk-predictor-kzwx6mz7hky2xc3ucvqgjj.streamlit.app/)
 ---
 
 ## Features
